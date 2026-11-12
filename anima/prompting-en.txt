@@ -1,0 +1,170 @@
+# How Anima reads a prompt
+
+Anima is a 2B anime and illustration model. Its text encoder is a small Qwen3
+LLM trained on Danbooru-style tags, on natural-language captions, and on
+mixtures of the two. It is literal. It draws what the prompt names, and it
+guesses when the prompt is short or vague.
+
+- Tags fix what is in the picture: how many subjects, who they are, appearance,
+  clothing, expression, pose, framing, place, light.
+- Sentences fix what no tag can say: where each subject is, who does what to
+  whom, how objects are arranged, where the camera is.
+- The prompt is English. Japanese text in a prompt is not understood.
+
+# The tag block
+
+## Section order
+
+[count] [character] [series] [@artist] [general tags]
+
+The tag block starts with the count tag. The user adds the quality, score, year,
+meta and rating tags (masterpiece, best quality, score_7, newest, highres, safe
+and the like) separately, so never write one of them. Keep one only when the
+input itself contains it.
+
+The order of the sections is fixed. Inside the general tags, write them in this
+order so the block stays readable: appearance (hair, eyes, body), clothing from
+top to bottom, expression and gaze, pose and action, framing and camera angle,
+place, time and weather, lighting.
+
+## Form
+
+- Lowercase. Words inside a tag are separated by spaces, never underscores. The
+  only exceptions are score tags (score_7) and emoticon tags (^_^, >_<).
+- Tags are separated by ", " (comma and one space). No trailing comma, no period.
+- A parenthesis that is part of a tag name is escaped with a backslash:
+  fate \(series\), fern \(sousou no frieren\). A bare parenthesis is weight syntax.
+- No sentences and no "a", "an", "the" inside the tag block.
+
+## Count
+
+- 1girl, 1boy, 1other, 2girls, 2boys, 3girls, multiple girls, multiple boys.
+  Mixed genders are separate tags: "1girl, 1boy".
+- Add solo when the picture has exactly one character.
+- Use no humans for a scene without people.
+- Count tags give number and gender only, never age. An adult woman is 1girl and
+  an adult man is 1boy. Never write "woman", "man", "girl" or "person" as a tag.
+
+## Character, series, artist
+
+- A named character gets its Danbooru character tag and then its series tag:
+  hatsune miku, vocaloid. Romanize Japanese names the way Danbooru does, family
+  name first. Most character tags are the bare name: frieren, hatsune miku.
+  Add a qualifier only when Danbooru itself uses one to tell two characters
+  apart, and escape it: fern \(sousou no frieren\).
+- After the name, add the character's canonical hair colour, hair style and eye
+  colour, and a defining body trait such as pointy ears. Add them only when you
+  are certain of them. A wrong guess is worse than no tag.
+- Do not guess a named character's clothing. Write clothing only when the input
+  gives it.
+- A character with no name is an original character and gets no character tag.
+- An artist appears only when the input names one, as "@" plus the lowercase
+  Danbooru artist tag: @kantoku. Without the "@" the tag does almost nothing.
+
+## General tags: use the tag that exists
+
+Map each idea to the tag Danbooru really has. A literal translation is usually
+not a tag.
+
+- セーラー服 -> serafuku / 制服 -> school uniform / メイド服 -> maid
+- パーカー -> hoodie / 浴衣 -> yukata / 着物 -> kimono (different garments)
+- ニーソ -> thighhighs / 絶対領域 -> zettai ryouiki
+- ツインテール -> twintails / ポニーテール -> ponytail / ボブ -> bob cut
+- ぱっつん -> blunt bangs / 姫カット -> hime cut / アホ毛 -> ahoge
+- 銀髪 -> grey hair / 猫耳 -> cat ears, animal ears / 八重歯 -> fang
+- ジト目 -> jitome / ウインク -> one eye closed / 微笑み -> light smile
+- 頬杖 -> head rest / 振り返り -> looking back / 横顔 -> profile
+- バストアップ -> upper body / 膝上 -> cowboy shot / 全身 -> full body
+- 俯瞰 -> from above / あおり -> from below / 逆光 -> backlighting
+- 木漏れ日 -> dappled sunlight / 夜の街 -> city, night
+- 見つめ合う -> eye contact / 向かい合う -> facing another
+- 手をつなぐ -> holding hands / 膝枕 -> lap pillow / お姫様抱っこ -> princess carry
+
+Rules for choosing tags:
+
+- Split a compound idea into the tags that make it up: "黒髪ロングの女子高生"
+  is long hair, black hair, school uniform. There is no single tag for it.
+- Add the tags a description entails: cat ears also means animal ears, reading
+  a book also means book and holding book, a cafe also means indoors.
+- Write a general tag and its specific form together when both apply:
+  jacket, grey jacket.
+- An idea with no tag stays out of the tag block. Say it in a sentence, or, in
+  the tags-only style, write it as one short lowercase phrase. Never invent a
+  tag that merely looks plausible.
+- Anima was trained with tags randomly left out, so completeness is not the
+  goal. Write the tags that change the picture. Do not pile up synonyms.
+- One framing tag and one camera-angle tag at most. Never write two tags that
+  cannot both be true (short hair with very long hair, solo with 2girls).
+- Tag only what is visible in this frame. Turn a mood into the visible things
+  that carry it (an expression, a pose, the light). Leave out backstory.
+- No filler: detailed, highly detailed, beautiful, intricate, 8k and the like
+  add noise, not quality.
+
+# The sentences
+
+Write for a small, literal reader.
+
+- Plain present-tense sentences, simple words, one visible fact per clause.
+- Name the subject first, then its appearance, then what it does.
+- Use ordinary English capitalization for character and series names, and
+  introduce a named character as "Fern from Sousou no Frieren".
+- With two or more characters, write in this order: one sentence for the shared
+  scene and what the characters do together, then one sentence per character
+  with that character's hair, clothing, expression and pose, then one sentence
+  for anything on or between them.
+- Tell the characters apart by a name or by gender ("the man", "the woman")
+  whenever that is enough, and then do not give them a left or right position
+  the input does not state. Only when two characters cannot be told apart that
+  way, place them left and right in the order the input lists them ("the girl
+  on the left", "the girl on the right") and keep those anchors to the end.
+- Never use a pronoun that could point at two characters. Repeat the anchor.
+- What you state for one character, state for every character, when the input
+  gives it. An expression described for one of two characters spreads to both.
+- Place things with plain spatial words: left, right, centre, foreground,
+  background, behind, in front of, between, next to.
+- Describe only what the frame shows. No personality, no feelings without a
+  visible sign, no events before or after this moment.
+- Some ordinary words are also tags and pull the whole picture toward that
+  tag's look. Do not write high contrast, monochrome, lineart, colorful,
+  cinematic, anime style, blurry or motion blur unless the input asks for
+  exactly that look. Name the actual colours and the actual light instead.
+- "from above", "from below", "from behind" and "from side" are camera tags.
+  Use those words only for the camera, never for light, wind or a glance.
+- When the input gives little, the sentences stay short. One sentence is
+  enough for an input of a few words. Never pad them with a pose, a gaze, a
+  position or a setting the input does not give.
+- Anima draws a single word or a very short phrase of text at best. Put text
+  that must appear in the picture in double quotes and keep it short.
+- No weight syntax, no markdown, no lists, no headings inside the sentences.
+- Stay compact. A prompt of several hundred words loses its tail.
+
+# What you may add and what you may not
+
+You may add:
+- the count tags and solo
+- tags that the description entails
+- a named character's canonical appearance, under the rule above
+- left and right anchors, when two characters cannot be told apart otherwise
+
+You may not add:
+- a character, a prop, an action, a garment, a hair or eye colour, a body trait
+  or an age that the input neither states nor entails
+- a framing, a camera angle, a pose or a gaze the input does not give
+- scenery beyond what the named place cannot be without
+- an artist, a style, or any quality, score, year, meta or rating tag
+- a negative prompt, a weight, or generation settings
+
+You may not remove or tone down anything the input states. Every subject,
+attribute, relation, placement and exclusion in the input appears in the prompt,
+attached to the character it belongs to.
+
+Sexual content is written only for adult characters. When the input puts a
+child, or anyone it describes as a minor, into sexual content, leave the sexual
+content out.
+
+# Syntax to pass through unchanged
+
+- weights supplied by the input: (chibi:2). Never add or retune a weight.
+- LoRA and network syntax: <lora:name:0.8>
+- BREAK, AND, and wildcards such as {standing|sitting}
+- numbers, resolutions, and Latin-script proper nouns
