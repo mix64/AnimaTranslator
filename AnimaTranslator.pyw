@@ -8,14 +8,19 @@
 """
 from __future__ import annotations
 
+import base64
 import ctypes
+import math
 import os
 import queue
 import re
+import tempfile
 import threading
 import tkinter as tk
 import urllib.error
 import webbrowser
+from pathlib import Path
+from tkinter import filedialog
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
@@ -23,6 +28,7 @@ import config
 import deepseek
 import grounding
 import mcpdict
+import pngmeta
 import prompts
 
 APP_TITLE = "Anima Prompt Translator"
@@ -125,6 +131,15 @@ STYLE_LABELS = {
     "natural": "自然文",
 }
 REASONING_EFFORTS = ("low", "high", "max")
+
+# ［AI への指示］に添える画像
+MAX_IMAGES = 4
+# 送る画像の長辺の上限。これより大きければ整数分の 1 に縮めて送る。
+# 生成画像の原寸（1024〜2048px）を base64 で送ると数 MB になり、API に断られやすい。
+SEND_MAX_SIDE = 1536
+THUMB_SIDE = 64
+IMAGE_UNSUPPORTED_HINT = ("このモデルは画像を受け付けないのかもしれません。"
+                          "［画像も送る］を外すと、メタデータだけを渡します。")
 
 SOURCE_COMPOSITION_HEADER = "構図・背景"
 SOURCE_MALE_HEADER = "男性キャラクター"
@@ -495,6 +510,69 @@ def make_icon() -> tk.PhotoImage:
 
 
 # --------------------------------------------------------------- 設定ダイアログ
+
+def load_attachment(master: tk.Misc, path: str) -> dict:
+    """PNG を読み、メタデータ、送る画像（data URL）、サムネイルを作る。
+
+    縮小と PNG への書き出しは Tk の photo で行う（Pillow を使わないため）。
+    """
+    raw = Path(path).read_bytes()
+    info = pngmeta.read_png_info(raw)
+    photo = tk.PhotoImage(master=master, file=path)
+    width, height = photo.width(), photo.height()
+    longest = max(width, height, 1)
+
+    factor = math.ceil(longest / SEND_MAX_SIDE)
+    if factor > 1:
+        handle, temp = tempfile.mkstemp(suffix=".png")
+        os.close(handle)
+        try:
+            photo.subsample(factor).write(temp, format="png")
+            payload = Path(temp).read_bytes()
+        finally:
+            os.unlink(temp)
+    else:
+        payload = raw
+
+    return {
+        "path": path,
+        "name": os.path.basename(path),
+        "width": width,
+        "height": height,
+        "metadata": pngmeta.describe(info),
+        "data_url": "data:image/png;base64," + base64.b64encode(payload).decode("ascii"),
+        "thumb": photo.subsample(max(1, math.ceil(longest / px(THUMB_SIDE)))),
+    }
+
+
+def clipboard_files() -> list[str]:
+    """エクスプローラーでコピーしたファイルのパス（CF_HDROP）。無ければ空。"""
+    CF_HDROP = 15
+    try:
+        user32, shell32 = ctypes.windll.user32, ctypes.windll.shell32
+    except AttributeError:
+        return []
+    get_data = user32.GetClipboardData
+    get_data.restype = ctypes.c_void_p
+    query = shell32.DragQueryFileW
+    query.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint)
+    query.restype = ctypes.c_uint
+    if not user32.IsClipboardFormatAvailable(CF_HDROP) or not user32.OpenClipboard(None):
+        return []
+    try:
+        handle = get_data(CF_HDROP)
+        if not handle:
+            return []
+        files = []
+        for index in range(query(handle, 0xFFFFFFFF, None, 0)):
+            length = query(handle, index, None, 0)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            query(handle, index, buffer, length + 1)
+            files.append(buffer.value)
+        return files
+    finally:
+        user32.CloseClipboard()
+
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent: "App"):
@@ -882,6 +960,7 @@ class App(tk.Tk):
         self.ground_note = ""
         self.to_notes = False       # 受信中の断片を回答欄に流しているか
         self.delta_tail = ""        # マーカー判定のために持ち越した末尾
+        self.attachments: list[dict] = []   # ［AI への指示］に添える画像（load_attachment）
         # 接続先ごとに Models API から得た一覧
         self.discovered: dict[str, list[deepseek.ModelInfo]] = {}
 
@@ -1344,8 +1423,11 @@ class App(tk.Tk):
 
         upper, upper_in, self.hint_meta, _caption = self._card(aside, "AI への指示")
         upper.grid(row=0, column=0, sticky="nsew", pady=(0, px(6)))
+        # 添付欄を先に下へ確保する（狭めたときに指示欄に押し出されないように）
+        self._build_attach_bar(upper_in)
         wrap, self.hint = self._text_widget(upper_in)
         wrap.pack(fill="both", expand=True)
+        self.hint.bind("<Control-v>", self._on_hint_paste)
 
         lower, lower_in, self.notes_meta, _caption = self._card(aside, "AI の回答")
         lower.grid(row=1, column=0, sticky="nsew")
@@ -1369,6 +1451,123 @@ class App(tk.Tk):
 
         for widget in (self.composition, self.out, self.hint, self.notes):
             widget.bind("<<Modified>>", self._on_modified)
+
+    # ------------------------------------------------------------ 画像の添付
+
+    def _build_attach_bar(self, parent):
+        """［AI への指示］の下の、画像を添付する欄。"""
+        bar = tk.Frame(parent, bg=PANEL)
+        bar.pack(side="bottom", fill="x", padx=px(10), pady=px(8))
+        tk.Frame(parent, bg=LINE, height=px(1)).pack(side="bottom", fill="x")
+
+        controls = tk.Frame(bar, bg=PANEL)
+        controls.pack(fill="x")
+        self.attach_btn = ttk.Button(controls, text="画像を添付", command=self.pick_images)
+        self.attach_btn.pack(side="left")
+        send_label = tk.Label(controls, text="画像も送る", bg=PANEL, fg=MUTED,
+                              font=self.ui_font, cursor="hand2")
+        send_label.pack(side="right")
+        self.send_images_var = tk.BooleanVar(value=bool(self.cfg.get("send_images", True)))
+        send_check = ModernCheckbutton(controls, self.send_images_var,
+                                       self._on_send_images_changed, background=PANEL)
+        send_check.pack(side="right")
+        send_label.bind("<Button-1>", lambda _e: send_check._toggle())
+
+        self.thumb_strip = tk.Frame(bar, bg=PANEL)
+        self.thumb_strip.pack(fill="x")
+        self._render_attachments()
+
+    def _on_send_images_changed(self):
+        self.cfg["send_images"] = bool(self.send_images_var.get())
+        self.save_config()
+
+    def pick_images(self):
+        paths = filedialog.askopenfilenames(
+            parent=self, title="AI に見せる画像を選ぶ",
+            filetypes=[("PNG 画像", "*.png"), ("すべてのファイル", "*.*")])
+        self.attach_images(paths)
+
+    def _on_hint_paste(self, _event):
+        """エクスプローラーでコピーした画像ファイルなら添付する。文字なら普通に貼る。"""
+        files = [path for path in clipboard_files() if path.lower().endswith(".png")]
+        if not files:
+            return None
+        self.attach_images(files)
+        return "break"
+
+    def attach_images(self, paths):
+        errors = []
+        for path in paths:
+            if len(self.attachments) >= MAX_IMAGES:
+                errors.append(f"画像は {MAX_IMAGES} 枚までです。")
+                break
+            if any(item["path"] == path for item in self.attachments):
+                continue
+            try:
+                self.attachments.append(load_attachment(self, path))
+            except (OSError, ValueError, tk.TclError) as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+        self._render_attachments()
+        if errors:
+            self.status.configure(text="  ".join(errors), style="Error.TLabel")
+        elif paths:
+            self.status.configure(text=self._attachment_summary(), style="Muted.TLabel")
+
+    def _attachment_summary(self) -> str:
+        with_meta = sum(1 for item in self.attachments if item["metadata"])
+        return (f"画像 {len(self.attachments)} 枚を添付中"
+                f"（メタデータあり {with_meta} 枚）。［指示で修正］で一緒に渡します。")
+
+    def remove_attachment(self, item):
+        if item in self.attachments:
+            self.attachments.remove(item)
+        self._render_attachments()
+
+    def _render_attachments(self):
+        for child in self.thumb_strip.winfo_children():
+            child.destroy()
+        for number, item in enumerate(self.attachments, 1):
+            cell = tk.Frame(self.thumb_strip, bg=PANEL)
+            cell.pack(side="left", padx=(0, px(8)), pady=(px(8), 0))
+            thumb = tk.Label(cell, image=item["thumb"], bg=PANEL, cursor="hand2",
+                             borderwidth=0, highlightthickness=px(1),
+                             highlightbackground=LINE)
+            thumb.pack(side="top")
+            tag = "画像" + str(number) + ("・メタ" if item["metadata"] else "")
+            caption = tk.Frame(cell, bg=PANEL)
+            caption.pack(side="top", fill="x")
+            tk.Label(caption, text=tag, bg=PANEL, fg=OK if item["metadata"] else MUTED,
+                     font=self.ui_font).pack(side="left")
+            FlatIconButton(caption, "delete",
+                           lambda item=item: self.remove_attachment(item),
+                           background=PANEL, danger=True).pack(side="right")
+            thumb.bind("<Button-1>", lambda _e, item=item: self.show_attachment(item))
+            thumb.bind("<Enter>", lambda _e, item=item: self.status.configure(
+                text=f"{item['name']}  {item['width']}x{item['height']}  "
+                     + ("メタデータあり（クリックで表示）" if item["metadata"]
+                        else "メタデータなし"),
+                style="Muted.TLabel"))
+
+    def show_attachment(self, item):
+        """添付した画像から読み取ったメタデータを見せる。"""
+        window = tk.Toplevel(self)
+        window.title(item["name"])
+        window.configure(bg=BG)
+        window.geometry(f"{px(700)}x{px(460)}")
+        window.transient(self)
+        frame = ttk.Frame(window, padding=px(12))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=f"{item['path']}  ({item['width']}x{item['height']})",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, px(8)))
+        wrap, text = self._text_widget(frame, mono=True)
+        wrap.pack(fill="both", expand=True)
+        text.insert("1.0", item["metadata"] or "この PNG には生成情報が入っていません。")
+        text.configure(state="disabled")
+        ttk.Button(frame, text="閉じる", command=window.destroy).pack(
+            anchor="e", pady=(px(10), 0))
+        window.bind("<Escape>", lambda _e: window.destroy())
+        self.center_over_self(window)
+        style_titlebar(window)
 
     def _bind_keys(self):
         self.bind("<Control-Return>", self._on_translate_key)
@@ -1692,6 +1891,8 @@ class App(tk.Tk):
         self.out.delete("1.0", "end")
         self.hint.delete("1.0", "end")
         self.notes.delete("1.0", "end")
+        self.attachments = []
+        self._render_attachments()
         self.marks = {}
         self.reasoning = ""
         self.ground_note = ""
@@ -1767,10 +1968,15 @@ class App(tk.Tk):
             return
 
         source = self.get_source_text()
+        send = bool(self.send_images_var.get())
+        notes = [prompts.ImageNote(item["name"], item["width"], item["height"],
+                                   item["metadata"], send)
+                 for item in self.attachments]
+        images = [item["data_url"] for item in self.attachments] if send else []
         self._start(prompts.build_revise_prompt(self.current_style(),
                                                 self.cfg.get("extra", "")),
-                    prompts.build_revise_request(source, current, instruction),
-                    source, instruction)
+                    prompts.build_revise_request(source, current, instruction, notes),
+                    source, instruction, images)
 
     def _stop_if_running(self) -> bool:
         """実行中なら中断して True を返す。"""
@@ -1779,7 +1985,8 @@ class App(tk.Tk):
             return True
         return False
 
-    def _start(self, system_prompt: str, user_text: str, source_text: str, note: str):
+    def _start(self, system_prompt: str, user_text: str, source_text: str, note: str,
+               images: list[str] | None = None):
         """プロンプトをストリーミングで受け取り、必要ならタグ照合まで通す。"""
         self.save_config()
         self.set_output("")
@@ -1803,11 +2010,13 @@ class App(tk.Tk):
             try:
                 for kind, payload in deepseek.stream_chat(
                         endpoint, model, system_prompt, user_text, cancel,
-                        reasoning_effort):
+                        reasoning_effort, images=images or ()):
                     if cancel.is_set():
                         break
                     if kind == "delta":
                         draft.append(payload)
+                    elif kind == "error" and images and payload.startswith("API エラー 4"):
+                        payload += "\n" + IMAGE_UNSUPPORTED_HINT
                     self.queue.put((kind, payload))
 
                 # 説明は照合の対象外。プロンプト本体だけを渡す。

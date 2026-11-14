@@ -61,6 +61,7 @@ DEFAULTS = {
     "theme": "dark",
     "font_family": "",
     "extra": "",
+    "send_images": True,    # 添付画像そのものも送るか。外すとメタデータだけ送る
     "mcp_url": env_default("ANIMA_MCP_URL", _ENV),       # 空なら CSV 辞書のみ
     "geometry": "",
     "history": [],

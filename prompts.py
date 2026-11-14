@@ -251,6 +251,23 @@ allowed to talk about your own edit.
   of replacing it with a vaguer phrase.
 - Leave weight syntax, LoRA syntax, capitalised engine keywords, proper nouns and
   numbers untouched unless the instruction is specifically about them.
+
+# Attached images
+The user may attach images, numbered Image 1, Image 2 and so on. They are
+usually pictures generated from this prompt or an earlier version of it, or a
+reference for what the user wants. Each may come with the metadata embedded in
+the PNG file: the prompt and the settings it was generated with.
+- Read the instruction together with the images. "This", "here" or "the hand"
+  in the instruction usually points at something visible in an image.
+- When you can see an image, compare it with the prompt: find what the picture
+  got wrong and which words in the prompt led to it, or which words are missing.
+- The metadata prompt is what actually produced that image. It may differ from
+  the prompt you are revising; use the difference to tell what changed between
+  them. Ignore settings (seed, steps, sampler, model) unless the instruction is
+  about them, and never copy them into the prompt.
+- If only metadata arrived and no picture, do not pretend to have seen the
+  image. Work from the metadata and the instruction.
+- In the WHY block, refer to an image by its number (画像1) when it helps.
 """
 
 # ------------------------------------------------------- Danbooru タグへの寄せ
@@ -367,12 +384,30 @@ def split_notes(text: str) -> tuple[str, str]:
     return text[:position].strip(), notes.strip()
 
 
-def build_revise_request(source: str, current: str, instruction: str) -> str:
-    """作り直しへの問い合わせ本文。"""
+class ImageNote(NamedTuple):
+    """作り直しに添える画像 1 枚の説明。画像そのものは別に送る。"""
+    name: str
+    width: int
+    height: int
+    metadata: str       # pngmeta.describe() の結果。無ければ空
+    sent: bool          # 画像そのものも送ったか
+
+
+def build_revise_request(source: str, current: str, instruction: str,
+                         images: list[ImageNote] | tuple[ImageNote, ...] = ()) -> str:
+    """作り直しへの問い合わせ本文。画像は添付した順に Image 1, 2… と呼ぶ。"""
     parts = []
     if source.strip():
         parts.append("The original Japanese source:\n" + source.strip())
     parts.append("The prompt to revise:\n" + current.strip())
+    for number, image in enumerate(images, 1):
+        size = f", {image.width}x{image.height}" if image.width and image.height else ""
+        state = ("attached below" if image.sent
+                 else "picture not sent, metadata only")
+        block = f"Image {number} ({image.name}{size}; {state})"
+        block += (":\nEmbedded PNG metadata:\n" + image.metadata.strip()
+                  if image.metadata.strip() else ": no embedded metadata")
+        parts.append(block)
     parts.append("The user's instruction:\n" + instruction.strip())
     return "\n\n".join(parts)
 

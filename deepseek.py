@@ -183,21 +183,33 @@ def _pause(seconds: float, cancel) -> bool:
     return cancel.wait(seconds)
 
 
+def user_content(text: str, images: tuple[str, ...] | list[str] = ()):
+    """user メッセージの content。画像があれば OpenAI 互換の画像入力の形にする。
+
+    images は data URL（data:image/png;base64,...）の並び。
+    """
+    if not images:
+        return text
+    return ([{"type": "text", "text": text}]
+            + [{"type": "image_url", "image_url": {"url": url}} for url in images])
+
+
 def stream_chat(endpoint: Endpoint, model: str, system_prompt: str, user_text: str,
                 cancel=None, reasoning_effort: str | None = None,
-                timeout: int = TIMEOUT):
+                timeout: int = TIMEOUT, images: tuple[str, ...] | list[str] = ()):
     """応答の本文を逐次 yield する。
 
     yield は (kind, payload)。kind は "delta"（本文の断片）、
     "reasoning"（推論過程）、"notice"（再試行などの経過）、
     "error"（メッセージ）のいずれか。
     cancel は threading.Event。set されたら速やかに打ち切る。
+    images は user_content() に渡す data URL。画像を読めないモデルはエラーを返す。
     """
     body = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": user_content(user_text, images)},
         ],
         "stream": True,
         "temperature": TEMPERATURE,
