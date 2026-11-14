@@ -1,8 +1,8 @@
 # Anima Prompt Translator
 
 日本語で書いた絵の説明から、画像生成モデル **Anima** の書き方に沿った英語プロンプトを
-LLM に書かせる Windows デスクトップアプリ。LLM は DeepSeek Platform か、
-OpenAI 互換 API を持つローカル LLM を選べる。
+LLM に書かせる Windows デスクトップアプリ。LLM は DeepSeek Platform、OpenCode Go、
+OpenAI 互換 API を持つローカル LLM から選べる。
 
 - 依存パッケージなし（Python 3.9+ の標準ライブラリのみ）
 - API キーは［設定］から登録し、Windows DPAPI で暗号化して保存する
@@ -24,6 +24,8 @@ powershell -ExecutionPolicy Bypass -File create_shortcut.ps1
 DeepSeek Platform を使う場合は、初回起動時に API キーの登録を促されるので、
 [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) で発行したキーを
 ［設定］に貼り付けて［保存］。［接続テスト］でその場に疎通確認できる。
+OpenCode Go を使う場合は、[opencode.ai/console](https://opencode.ai/console) で発行したキーを
+［設定］の「OpenCode Go の API キー」に貼り付けて［保存］すると、メイン画面のモデル一覧に Go のモデルが並ぶ。
 
 ## 使い方
 
@@ -41,10 +43,17 @@ DeepSeek Platform を使う場合は、初回起動時に API キーの登録を
 | Esc | 中断 |
 | Ctrl+A | 各欄の全選択 |
 
-- **モデル** — DeepSeek V4.1 Flash（[API モデル名](https://api-docs.deepseek.com/) `deepseek-flash`、
-  API キー必須）と、ローカル LLM のモデル。ローカル LLM のモデルは起動時と設定の保存時に
-  `/v1/models` から取得する。繋がらないときは設定で選んだモデルだけが並ぶ
-- **effort** — 推論強度。`low` / `high`（既定）/ `max`。選択したモデルに適用される
+- **モデル** — 名前の後ろの括弧が接続先。
+  - DeepSeek: DeepSeek V4.1 Flash（[API モデル名](https://api-docs.deepseek.com/) `deepseek-flash`）
+  - OpenCode Go: Chat Completions 形式で使えるモデル。キーを登録したときだけ並ぶ
+  - ローカル: ローカル LLM の `/v1/models` が返すモデル
+
+  OpenCode Go とローカル LLM のモデルは、起動時と設定の保存時に取得する。
+  キーが要る接続先は、キーが無いと今選んでいるとき以外は並ばない。
+  取得できないときは、今選んでいるモデルだけが並ぶ
+- **effort** — 推論強度。`low` / `high`（既定）/ `max`。選択したモデルに適用される。
+  OpenCode Go のモデルは受け付ける強度が決まっているので、選んだ値が無ければいちばん近い強度で送る
+  （等距離なら強い方）。強度を指定できないモデルには送らない
 - **出力形式** — 下の「出力形式」を参照
 - **［AI への指示］（右上）** — 今のプロンプトをどう直すかを日本語で書く欄。
   例:「髪は白にして、教会の描写はもっと具体的に」
@@ -109,6 +118,9 @@ DeepSeek は混雑時に 503（Service is too busy）を返すことがある。
 
 - **DeepSeek Platform の API キー** — ［接続テスト］は DeepSeek Platform に対して確かめる。
   DeepSeek のモデルを選んでいるときは、キーが空のままでは保存できない
+- **OpenCode Go の API キー** — ［接続テスト］はモデル一覧を取り、選んでいる Go のモデル
+  （無ければ一覧の先頭）でキーを確かめ、使えるモデルの数を出す。
+  Go のモデルを選んでいるときは、キーが空のままでは保存できない
 - **ローカル LLM** — OpenAI 互換 API のサーバー
   - ベース URL: `/v1` まで書く。既定値は `.env` の `ANIMA_LOCAL_URL`。
     アプリはこの後ろに `/chat/completions` と `/models` を付けて使う
@@ -117,13 +129,13 @@ DeepSeek は混雑時に 503（Service is too busy）を返すことがある。
     ［接続してモデル一覧を取得］で、欄に書いた URL とキーのまま `/models` に問い合わせ、一覧を埋める。
     キーが違うと 401 になり、API キーを確かめるよう表示する
   - モデル欄が空でないまま保存すると、そのモデルが選ばれ、メイン画面のモデル一覧にも並ぶ
-- **Danbooru MCP** — 既定値は `.env` の `ANIMA_MCP_URL`。空なら使わない。
-  接続できれば全タグを照合し、接続できなければローカル CSV 辞書へ自動で戻る
 
 **プロンプト**
 
 - **追加指示** — 毎回のシステムプロンプトに足す常設の指示。例:「補足文は 2 文までにする」
   こちらは常設で、［AI への指示］はその場かぎり
+- **Danbooru MCP** — 既定値は `.env` の `ANIMA_MCP_URL`。空なら使わない。
+  接続できれば全タグを照合し、接続できなければローカル CSV 辞書へ自動で戻る
 
 **表示**
 
@@ -188,10 +200,12 @@ Danbooru の読み取り API（キー不要）から post_count 上位 10 万タ
 
 ## 接続先の既定値（.env）
 
-ローカル LLM と Danbooru MCP の URL は環境ごとに違うので、コードには書かず `.env` に置く。
+ローカル LLM と Danbooru MCP の URL、API キーは環境ごとに違うので、コードには書かず `.env` に置く。
 `.env.example` を `.env` にコピーして値を書く。`.env` は git に入らない。
 
 ```
+DEEPSEEK_API_KEY=
+OPENCODE_API_KEY=
 ANIMA_LOCAL_URL=http://localhost:8000/v1
 ANIMA_MCP_URL=
 ```
@@ -207,10 +221,12 @@ ANIMA_MCP_URL=
 %APPDATA%\AnimaPromptTranslator\config.json
 ```
 
-DeepSeek の API キーは `api_key_enc`、ローカル LLM の API キーは `local_api_key_enc` として
+DeepSeek の API キーは `api_key_enc`、OpenCode Go の API キーは `opencode_api_key_enc`、
+ローカル LLM の API キーは `local_api_key_enc` として
 Windows DPAPI（現在の Windows ユーザ専用）で暗号化される。
 別ユーザや、ファイルを持ち出した先では復号できない。
-設定に DeepSeek のキーが無い場合は環境変数 `DEEPSEEK_API_KEY` にフォールバックする。
+設定にキーが無い場合は、DeepSeek は `DEEPSEEK_API_KEY`、OpenCode Go は `OPENCODE_API_KEY` を
+環境変数、`.env` の順に探す。
 
 ## テスト
 

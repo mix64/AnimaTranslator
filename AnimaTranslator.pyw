@@ -2,7 +2,7 @@
 """Anima Prompt Translator - Windows GUI アプリ。
 
 日本語で書いた絵の説明から、画像生成モデル Anima の書き方に沿った
-英語プロンプトを LLM（DeepSeek Platform か OpenAI 互換のローカル LLM）に書かせる。
+英語プロンプトを LLM（DeepSeek Platform・OpenCode Go・OpenAI 互換のローカル LLM）に書かせる。
 
 .pyw なのでダブルクリックで起動でき、コンソールウィンドウは出ない。
 """
@@ -26,7 +26,6 @@ import mcpdict
 import prompts
 
 APP_TITLE = "Anima Prompt Translator"
-KEY_PAGE = "https://platform.deepseek.com/api_keys"
 
 THEMES = {
     # 眩しくないよう、真っ黒ではなく少し青みのある暗いグレーを土台にする
@@ -517,10 +516,15 @@ class SettingsDialog(tk.Toplevel):
         prompt = self._tab(tabs, "プロンプト")
         display = self._tab(tabs, "表示")
 
-        self._build_deepseek(connection, row=0)
-        self._build_local(connection, row=5)
-        self._build_mcp(connection, row=13)
+        # 接続先ごとの (キーの欄, その入力欄, 結果の表示)
+        self.keys: dict[str, tuple[tk.StringVar, ttk.Entry, ttk.Label]] = {}
+        self._build_keyed(connection, 0, "deepseek", "DeepSeek Platform の API キー",
+                          "キーを取得する（platform.deepseek.com）")
+        self._build_keyed(connection, 3, "opencode_go", "OpenCode Go の API キー",
+                          "キーを取得する（opencode.ai/console）", top=12)
+        self._build_local(connection, row=6)
         self._build_prompt(prompt)
+        self._build_mcp(prompt, row=3)
         self._build_display(display)
 
         # --- ボタン ---
@@ -534,7 +538,7 @@ class SettingsDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.bind("<Escape>", lambda _e: self._cancel())
         self.bind("<Return>", lambda _e: self._save())
-        self.key_entry.focus_set()
+        self.keys["deepseek"][1].focus_set()
         self.update_idletasks()
         parent.center_over_self(self)
         style_titlebar(self)
@@ -573,19 +577,21 @@ class SettingsDialog(tk.Toplevel):
                 row=row, column=1, padx=(px(8), 0))
         return entry
 
-    def _build_deepseek(self, parent, row: int):
-        cfg = self.parent.cfg
-        self._head(parent, row, "DeepSeek Platform の API キー",
-                   "DeepSeek Platform で発行したキーを貼り付けてください。")
-        self.key_var = tk.StringVar(value=cfg.get("api_key", ""))
-        self.key_entry = self._secret_entry(parent, row + 2, self.key_var)
-        ttk.Button(parent, text="接続テスト", command=self._test).grid(
-            row=row + 2, column=2, padx=(px(8), 0))
-        self.test_label = self._result_label(parent, row + 3)
-        link = ttk.Label(parent, text="キーを取得する（platform.deepseek.com）",
-                         style="Link.TLabel", cursor="hand2")
-        link.grid(row=row + 4, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
-        link.bind("<Button-1>", lambda _e: webbrowser.open(KEY_PAGE))
+    def _build_keyed(self, parent, row: int, name: str, title: str, link_text: str,
+                     top: int = 0):
+        """キーが要る接続先の欄。3 行使う。"""
+        provider = deepseek.PROVIDERS[name]
+        ttk.Label(parent, text=title, style="Head.TLabel").grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=(px(top), px(4)))
+        link = ttk.Label(parent, text=link_text, style="Link.TLabel", cursor="hand2")
+        link.grid(row=row, column=0, columnspan=3, sticky="e", pady=(px(top), px(4)))
+        link.bind("<Button-1>", lambda _e: webbrowser.open(provider.key_page))
+        variable = tk.StringVar(value=self.parent.cfg.get(provider.key_field, ""))
+        entry = self._secret_entry(parent, row + 1, variable)
+        ttk.Button(parent, text="接続テスト", command=lambda: self._test(name)).grid(
+            row=row + 1, column=2, padx=(px(8), 0))
+        label = self._result_label(parent, row + 2)
+        self.keys[name] = (variable, entry, label)
 
     def _build_local(self, parent, row: int):
         cfg = self.parent.cfg
@@ -607,7 +613,7 @@ class SettingsDialog(tk.Toplevel):
             value=cfg["model"] if cfg["endpoint"] == "local" else "")
         self.local_model_box = ttk.Combobox(
             parent, textvariable=self.local_model_var, width=50,
-            values=self.parent.local_models)
+            values=[model.id for model in self.parent.discovered.get("local", [])])
         self.local_model_box.grid(row=row + 7, column=0, sticky="ew")
         ttk.Button(parent, text="接続してモデル一覧を取得",
                    command=self._fetch_models).grid(
@@ -699,11 +705,37 @@ class SettingsDialog(tk.Toplevel):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _test(self):
-        endpoint = deepseek.resolve_endpoint({"api_key": self.key_var.get()}, "deepseek")
+    def _test(self, name: str):
+        """キーを確かめる。モデルを API から取る接続先は、一覧も取り直す。"""
+        provider = deepseek.PROVIDERS[name]
+        variable, _entry, label = self.keys[name]
+        endpoint = deepseek.resolve_endpoint({provider.key_field: variable.get()}, name)
         effort = self.parent.current_reasoning_effort()
-        self._run(self.test_label, lambda: deepseek.check_key(
-            endpoint, deepseek.DEEPSEEK_MODEL, effort))
+        cfg = self.parent.cfg
+        saved_model = cfg["model"] if cfg["endpoint"] == name else ""
+
+        def task():
+            if provider.models:
+                return deepseek.check_key(endpoint, provider.models[0], effort)
+            if not endpoint.api_key:
+                return False, "API キーが空です。"
+            try:
+                models = deepseek.list_models(endpoint)
+            except urllib.error.HTTPError as exc:
+                return False, deepseek.error_text(exc)
+            except Exception as exc:
+                return False, f"接続に失敗しました: {exc}"
+            if not models:
+                return False, "使えるモデルがありません。"
+            self.parent.queue.put(("models", (name, models)))
+            model = next((m for m in models if m.id == saved_model), models[0])
+            ok, message = deepseek.check_key(
+                endpoint, model.id, deepseek.pick_effort(effort, model.efforts))
+            if not ok:
+                return ok, message
+            return True, f"接続できました。{len(models)} 個のモデルが使えます。"
+
+        self._run(label, task)
 
     def _fetch_models(self):
         if not self.local_url_var.get().strip():
@@ -715,7 +747,7 @@ class SettingsDialog(tk.Toplevel):
 
         def task():
             try:
-                models = deepseek.list_models(endpoint.models_url, endpoint.api_key)
+                models = [model.id for model in deepseek.list_models(endpoint)]
             except urllib.error.HTTPError as exc:
                 return False, deepseek.error_text(exc)
             except Exception as exc:
@@ -742,15 +774,17 @@ class SettingsDialog(tk.Toplevel):
 
     def _save(self):
         local_model = self.local_model_var.get().strip()
-        uses_deepseek = not local_model and self.parent.cfg["endpoint"] == "deepseek"
-        if uses_deepseek and not self.key_var.get().strip():
-            self.test_label.configure(text="API キーが空です。", style="Error.TLabel")
-            self.key_entry.focus_set()
+        endpoint = "local" if local_model else self.parent.cfg["endpoint"]
+        if endpoint in self.keys and not self.keys[endpoint][0].get().strip():
+            _variable, entry, label = self.keys[endpoint]
+            label.configure(text="API キーが空です。", style="Error.TLabel")
+            entry.focus_set()
             return
         theme = next((name for name, label in THEME_LABELS.items()
                       if label == self.theme_var.get()), DEFAULT_THEME)
         self.result = {
-            "api_key": self.key_var.get().strip(),
+            **{deepseek.PROVIDERS[name].key_field: variable.get().strip()
+               for name, (variable, _entry, _label) in self.keys.items()},
             "local_url": self.local_url_var.get().strip(),
             "local_api_key": self.local_key_var.get().strip(),
             "local_model": local_model,
@@ -848,7 +882,8 @@ class App(tk.Tk):
         self.ground_note = ""
         self.to_notes = False       # 受信中の断片を回答欄に流しているか
         self.delta_tail = ""        # マーカー判定のために持ち越した末尾
-        self.local_models: list[str] = []   # ローカル LLM の Models API から得た一覧
+        # 接続先ごとに Models API から得た一覧
+        self.discovered: dict[str, list[deepseek.ModelInfo]] = {}
 
         self._configure_fonts()
 
@@ -1173,7 +1208,7 @@ class App(tk.Tk):
         bar.pack(fill="x", pady=(0, px(10)))
 
         ttk.Label(bar, text="モデル", style="Muted.TLabel").pack(side="left")
-        self.model_var = tk.StringVar(value=self.cfg["model"])
+        self.model_var = tk.StringVar(value=self._model_label())
         self.model_box = ttk.Combobox(
             bar, textvariable=self.model_var, state="readonly", width=38,
             values=list(self._model_choices()))
@@ -1476,15 +1511,33 @@ class App(tk.Tk):
         endpoint = self.current_endpoint()
         return endpoint.needs_key and not endpoint.api_key
 
-    def _model_choices(self) -> dict[str, str]:
-        """ツールバーに並べるモデル ID と、その接続先。"""
-        local = list(self.local_models)
-        if self.cfg["endpoint"] == "local" and self.cfg["model"] not in local:
-            local.append(self.cfg["model"])
-        choices = {deepseek.DEEPSEEK_MODEL: "deepseek"}
-        for model in local:
-            choices.setdefault(model, "local")
+    def _model_label(self, name: str | None = None, model: str | None = None) -> str:
+        """ツールバーに出す名前。同じ ID が別の接続先にもあり得るので接続先を添える。"""
+        name = name or self.cfg["endpoint"]
+        model = model or self.cfg["model"]
+        return f"{model}（{deepseek.PROVIDERS[name].label}）"
+
+    def _model_choices(self) -> dict[str, tuple[str, deepseek.ModelInfo]]:
+        """ツールバーに並べる名前と、その (接続先, モデル)。"""
+        choices = {}
+        for provider in deepseek.PROVIDERS.values():
+            current = provider.name == self.cfg["endpoint"]
+            if provider.needs_key and not current and not self.cfg.get(provider.key_field):
+                continue
+            models = ([deepseek.ModelInfo(model) for model in provider.models]
+                      or list(self.discovered.get(provider.name, [])))
+            # 一覧が取れなくても、保存してあるモデルは選べるように残す
+            if current and all(model.id != self.cfg["model"] for model in models):
+                models.append(deepseek.ModelInfo(self.cfg["model"]))
+            for model in models:
+                choices.setdefault(self._model_label(provider.name, model.id),
+                                   (provider.name, model))
         return choices
+
+    def effective_reasoning_effort(self) -> str | None:
+        """選んだ effort を、今のモデルが受け付ける値に寄せる。"""
+        _name, model = self._model_choices()[self._model_label()]
+        return deepseek.pick_effort(self.current_reasoning_effort(), model.efforts)
 
     def current_reasoning_effort(self) -> str:
         effort = self.reasoning_effort_var.get()
@@ -1498,30 +1551,34 @@ class App(tk.Tk):
         return prompts.DEFAULT_STYLE
 
     def _on_model_changed(self, _event=None):
-        model = self.model_var.get()
-        self.cfg["endpoint"] = self._model_choices()[model]
-        self.cfg["model"] = model
+        name, model = self._model_choices()[self.model_var.get()]
+        self.cfg["endpoint"], self.cfg["model"] = name, model.id
         self.save_config()
 
     def _update_model_box(self):
         self.model_box.configure(values=list(self._model_choices()))
-        self.model_var.set(self.cfg["model"])
+        self.model_var.set(self._model_label())
 
     def _refresh_model_lists(self):
-        """ローカル LLM のモデル一覧を、画面を止めずに取得する。"""
-        endpoint = deepseek.resolve_endpoint(self.cfg, "local")
+        """Models API を持つ接続先のモデル一覧を、画面を止めずに取得する。"""
+        for provider in deepseek.PROVIDERS.values():
+            endpoint = deepseek.resolve_endpoint(self.cfg, provider.name)
+            if provider.models or (endpoint.needs_key and not endpoint.api_key):
+                continue
+            if provider.url_field and not self.cfg.get(provider.url_field, "").strip():
+                continue
+            threading.Thread(target=self._fetch_model_list, args=(endpoint,),
+                             daemon=True).start()
 
-        def worker():
-            try:
-                models = deepseek.list_models(endpoint.models_url, endpoint.api_key)
-            except Exception:
-                return                  # 繋がらなければ保存済みのモデルだけを並べる
-            self.queue.put(("models", models))
+    def _fetch_model_list(self, endpoint: deepseek.Endpoint):
+        try:
+            models = deepseek.list_models(endpoint)
+        except Exception:
+            return                  # 繋がらなければ保存済みのモデルだけを並べる
+        self.queue.put(("models", (endpoint.name, models)))
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _apply_discovered_models(self, models: list[str]):
-        self.local_models = models
+    def _apply_discovered_models(self, name: str, models: list[deepseek.ModelInfo]):
+        self.discovered[name] = models
         self._update_model_box()
 
     # ------------------------------------------------- 照合で動いたタグの目印
@@ -1595,9 +1652,10 @@ class App(tk.Tk):
             return
         self.status.configure(text="API キーが未設定です。［設定］から登録してください。",
                               style="Error.TLabel")
+        label = deepseek.PROVIDERS[self.cfg["endpoint"]].label
         if messagebox.askyesno(
                 APP_TITLE,
-                "DEEPSEEK_API_KEY がまだ登録されていません。\n今すぐ設定しますか？",
+                f"{label} の API キーがまだ登録されていません。\n今すぐ設定しますか？",
                 parent=self):
             self.open_settings()
 
@@ -1736,7 +1794,7 @@ class App(tk.Tk):
         model = self.current_model()
         endpoint = self.current_endpoint()
         mcp_url = self.cfg.get("mcp_url", "")
-        reasoning_effort = self.current_reasoning_effort()
+        reasoning_effort = self.effective_reasoning_effort()
         self.cancel = threading.Event()
         cancel = self.cancel
 
@@ -1809,7 +1867,7 @@ class App(tk.Tk):
                     self.delta_tail = ""
                     self.set_output(payload)
                 elif kind == "models":
-                    self._apply_discovered_models(payload)
+                    self._apply_discovered_models(*payload)
                 elif kind == "error":
                     self.status.configure(text=payload.replace("\n", "  "), style="Error.TLabel")
                     messagebox.showerror(APP_TITLE, payload, parent=self)

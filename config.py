@@ -51,7 +51,8 @@ _ENV = read_env_file(ENV_FILE)
 
 DEFAULTS = {
     "api_key": "",          # DeepSeek Platform のキー
-    "endpoint": "deepseek",           # deepseek | local
+    "opencode_api_key": "",
+    "endpoint": "deepseek",           # deepseek.PROVIDERS のキー
     "model": deepseek.DEEPSEEK_MODEL,
     "local_url": env_default("ANIMA_LOCAL_URL", _ENV),   # OpenAI 互換の /v1 まで
     "local_api_key": "",
@@ -65,7 +66,7 @@ DEFAULTS = {
     "history": [],
 }
 # 平文では書き出さず、<名前>_enc に暗号化して入れる。
-SECRETS = ("api_key", "local_api_key")
+SECRETS = ("api_key", "opencode_api_key", "local_api_key")
 HISTORY_MAX = 30
 
 
@@ -135,16 +136,17 @@ def load() -> dict:
     for name in SECRETS:
         if raw.get(f"{name}_enc"):
             cfg[name] = decrypt(raw[f"{name}_enc"]) or cfg[name]
-    # 設定が空なら環境変数にフォールバック
-    if not cfg["api_key"]:
-        cfg["api_key"] = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    for provider in deepseek.PROVIDERS.values():
+        if provider.key_env and not cfg[provider.key_field]:
+            cfg[provider.key_field] = env_default(provider.key_env, _ENV)
 
-    if cfg["endpoint"] not in deepseek.ENDPOINT_NAMES or (
-            cfg["endpoint"] == "local" and not cfg["model"].strip()):
-        cfg["endpoint"] = DEFAULTS["endpoint"]
-    # DeepSeek Platform のモデルは 1 つだけなので、保存値がそれ以外なら直す。
-    if cfg["endpoint"] == "deepseek":
-        cfg["model"] = deepseek.DEEPSEEK_MODEL
+    provider = deepseek.PROVIDERS.get(cfg["endpoint"])
+    if provider is None or (not provider.models and not cfg["model"].strip()):
+        provider = deepseek.PROVIDERS[DEFAULTS["endpoint"]]
+        cfg["endpoint"] = provider.name
+    # モデルが決まっている接続先（DeepSeek Platform）では、保存値がそれ以外なら直す。
+    if provider.models and cfg["model"] not in provider.models:
+        cfg["model"] = provider.models[0]
     if cfg["style"] not in prompts.STYLES:
         cfg["style"] = prompts.DEFAULT_STYLE
     return cfg

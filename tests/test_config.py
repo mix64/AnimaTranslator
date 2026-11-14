@@ -32,15 +32,34 @@ class TestConfig(unittest.TestCase):
         cfg = config.load()
         cfg["local_api_key"] = "local-secret-1234"
         cfg["api_key"] = "deepseek-secret-5678"
+        cfg["opencode_api_key"] = "opencode-secret-9012"
 
         config.save(cfg)
 
         saved = self.file.read_text(encoding="utf-8")
         self.assertNotIn("local-secret-1234", saved)
         self.assertNotIn("deepseek-secret-5678", saved)
+        self.assertNotIn("opencode-secret-9012", saved)
         loaded = config.load()
         self.assertEqual(loaded["local_api_key"], "local-secret-1234")
         self.assertEqual(loaded["api_key"], "deepseek-secret-5678")
+        self.assertEqual(loaded["opencode_api_key"], "opencode-secret-9012")
+
+    def test_empty_keys_fall_back_to_environment_then_env_file(self):
+        file_values = {"DEEPSEEK_API_KEY": "ds-from-file", "OPENCODE_API_KEY": "go-from-file"}
+        with mock.patch.object(config, "_ENV", file_values),                 mock.patch.dict("os.environ", {"OPENCODE_API_KEY": "go-from-env"}, clear=True):
+            cfg = config.load()
+
+        self.assertEqual(cfg["api_key"], "ds-from-file")
+        self.assertEqual(cfg["opencode_api_key"], "go-from-env")
+        self.assertEqual(cfg["local_api_key"], "")
+
+    def test_saved_key_wins_over_environment(self):
+        self.file.write_text(json.dumps({"opencode_api_key": "go-saved"}), encoding="utf-8")
+        with mock.patch.dict("os.environ", {"OPENCODE_API_KEY": "go-from-env"}):
+            cfg = config.load()
+
+        self.assertEqual(cfg["opencode_api_key"], "go-saved")
 
     def test_unknown_saved_endpoint_and_style_fall_back_to_defaults(self):
         self.file.write_text(json.dumps({
@@ -60,6 +79,23 @@ class TestConfig(unittest.TestCase):
         cfg = config.load()
 
         self.assertEqual((cfg["endpoint"], cfg["model"]), ("local", "glm-5.3"))
+
+
+    def test_saved_opencode_go_model_is_kept(self):
+        self.file.write_text(json.dumps({
+            "endpoint": "opencode_go", "model": "kimi-k3"}), encoding="utf-8")
+
+        cfg = config.load()
+
+        self.assertEqual((cfg["endpoint"], cfg["model"]), ("opencode_go", "kimi-k3"))
+
+    def test_opencode_go_without_a_model_falls_back_to_deepseek(self):
+        self.file.write_text(json.dumps({
+            "endpoint": "opencode_go", "model": " "}), encoding="utf-8")
+
+        cfg = config.load()
+
+        self.assertEqual((cfg["endpoint"], cfg["model"]), ("deepseek", "deepseek-flash"))
 
 
 class TestEnvFile(unittest.TestCase):
